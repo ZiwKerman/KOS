@@ -63,7 +63,7 @@ namespace kOS.Safe.Compilation
                 // add the linked object to the final program
                 program.AddRange(linkedObject.MergeSections());
             }
-
+                       
             // replace all the labels references with the corresponding address
             ReplaceLabels(program);
 
@@ -130,7 +130,11 @@ namespace kOS.Safe.Compilation
                 else if (opcode is OpcodePushRelocateLater)
                 {
                     // Replace the OpcodePushRelocateLater with the proper OpcodePush:
-                    OpcodePush newOp = new OpcodePush(destinationIndex);
+                    Opcode newOp;
+                    if (opcode is OpcodePushDelegateRelocateLater)
+                        newOp = new OpcodePushDelegate(destinationIndex);
+                    else
+                        newOp = new OpcodePush(destinationIndex);
                     newOp.SourceName = opcode.SourceName;
                     newOp.SourceLine = opcode.SourceLine;
                     newOp.SourceColumn = opcode.SourceColumn;

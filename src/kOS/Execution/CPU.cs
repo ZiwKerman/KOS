@@ -22,7 +22,7 @@ namespace kOS.Execution
             Waiting = 2
         }
 
-        private readonly Stack stack;
+        private readonly IStack stack;
         private readonly VariableScope globalVariables;
         private Status currentStatus;
         private double currentTime;
@@ -41,6 +41,7 @@ namespace kOS.Execution
         private double totalExecutionTime;
         private int maxMainlineInstructionsSoFar;
         private int maxTriggerInstructionsSoFar;
+        private readonly StringBuilder executeLog = new StringBuilder();
 
         public int InstructionPointer
         {
@@ -58,7 +59,7 @@ namespace kOS.Execution
             stack = new Stack();
             globalVariables = new VariableScope(0, -1);
             contexts = new List<ProgramContext>();
-            if (this.shared.UpdateHandler != null) this.shared.UpdateHandler.AddObserver(this);
+            if (this.shared.UpdateHandler != null) this.shared.UpdateHandler.AddFixedObserver(this);
         }
 
         public void Boot()
@@ -203,6 +204,32 @@ namespace kOS.Execution
             {
                 PopContext();
             }
+        }
+        
+        /// <summary>
+        /// Build a clone of the current state of the scope stack, for the sake of capturing a closure.
+        /// </summary>
+        /// <returns>A stripped down copy of the stack with just the relevant closure frames in it.</returns>
+        public List<VariableScope> GetCurrentClosure()
+        {
+            List<VariableScope> closureList = new List<VariableScope>();
+            GetNestedDictionary("", closureList);
+            // The closure's variable scopes need to be marked as such, so the
+            // 'popscope' opcode knows to pop them off in one go when it hits
+            // them on the stack:
+            foreach (VariableScope scope in closureList)
+                scope.IsClosure = true;
+            return closureList;
+        }
+        
+        /// <summary>
+        /// Build a delegate call for the given function entry point, in which it will capture a closure of the current
+        /// runtime scoping state to be used when that function gets called later by OpcodeCall:
+        /// </summary>
+        /// <returns>The delegate object you can store in a variable.</returns>
+        public IUserDelegate MakeUserDelegate(int entryPoint)
+        {
+            return new UserDelegate(this, entryPoint, true);
         }
 
         // only two contexts exist now, one for the interpreter and one for the programs
@@ -372,22 +399,28 @@ namespace kOS.Execution
             }
             return stackItem == null ? globalVariables : (VariableScope) stackItem;
         }
-
+        
         /// <summary>
-        /// Gets the dictionary that contains the given identifer, starting the
+        /// Gets the dictionary that contains the given identifier, starting the
         /// search at the local level and scanning the scopes upward all the
         /// way to the global dictionary.<br/>
         /// Does not allow the walk to use scope frames that were not directly in this
-        /// scope's lexical chain.  It skips over scope frames from other braches
+        /// scope's lexical chain.  It skips over scope frames from other branches
         /// of the parse tree.  (i.e. if a function calls a function elsewhere).<br/>
         /// Returns null when no hit was found.<br/>
         /// </summary>
-        /// <param name="identifier">identifer name to search for</param>
-        /// <returns>The dictionary found, or null if no dictionary contins the identifier.</returns>
-        private VariableScope GetNestedDictionary(string identifier)
+        /// <param name="identifier">identifier name to search for.  Pass an empty string to guarentee no hits will
+        ///   be found (which is useful to do when using the searchReport argument).</param>
+        /// <param name="searchReport">If you want to see the list of all the scopes that constituted the search
+        ///   path, not just the final hit, pass an empty list here and this method will fill it for you with
+        ///   that report.  Pass in a null to not get a report.</param>
+        /// <returns>The dictionary found, or null if no dictionary contains the identifier.</returns>
+        private VariableScope GetNestedDictionary(string identifier, List<VariableScope> searchReport = null)
         {
+            if (searchReport != null) 
+                searchReport.Clear();
             Int16 rawStackDepth = 0 ;
-            while (true) /*all of this loop's exits are explicit break or return stmts*/
+            while (true) /*all of this loop's exits are explicit break or return statements*/
             {
                 object stackItem;
                 bool stackExhausted = !(stack.PeekCheck(-1 - rawStackDepth, out stackItem));
@@ -400,11 +433,14 @@ namespace kOS.Execution
                     continue;
                 }
 
+                if (searchReport != null)
+                    searchReport.Add(localDict);
+                
                 if (localDict.Variables.ContainsKey(identifier))
                     return localDict;
-
                 
-                // Get the next VariableScope that is the lexical (not runtime) parent of this one:
+                // Get the next VariableScope that is valid, where valid means:
+                //    It is the lexical (not runtime) parent of this scope.
                 // -------------------------------------------------------------------------------
 
                 // Scan the stack until the variable scope with the right parent ID is seen:
@@ -418,10 +454,8 @@ namespace kOS.Execution
                         // If the scope id of this frame is my parent ID, then we found it and are done.
                         if (scopeFrame.ScopeId == localDict.ParentScopeId)
                         {
-                            needsIncrement = false;
                             break;
                         }
-
                         // In the case where the variable scope is the SAME lexical ID as myself, that
                         // means I recursively called myself and the thing on the runtime stack just before
                         // me is ... another instance of me.  In that case just follow it's parent skip level
@@ -432,7 +466,6 @@ namespace kOS.Execution
                             needsIncrement = false;
                         }
                     }
-
                     if (needsIncrement)
                     {
                         ++skippedLevels;
@@ -543,12 +576,14 @@ namespace kOS.Execution
         /// <summary>
         /// Make a new variable at either the local depth or the
         /// global depth depending.
-        /// throws exception if it already exists
+        /// throws exception if it already exists as a boundvariable at the desired
+        /// scope level, unless overwrite = true.
         /// </summary>
         /// <param name="variable">variable to add</param>
         /// <param name="identifier">name of variable to adde</param>
         /// <param name="local">true if you want to make it at local depth</param>
-        public void AddVariable(Variable variable, string identifier, bool local)
+        /// <param name="overwrite">true if it's okay to overwrite an existing variable</param>
+        public void AddVariable(Variable variable, string identifier, bool local, bool overwrite = false)
         {
             identifier = identifier.ToLower();
             
@@ -565,7 +600,12 @@ namespace kOS.Execution
             if (whichDict.Variables.ContainsKey(identifier))
             {
                 if (whichDict.Variables[identifier].Value is BoundVariable)
-                    throw new KOSIdentiferClashException(identifier);
+                {
+                    if (!overwrite)
+                        throw new KOSIdentiferClashException(identifier);
+                    else
+                        return; // no work to do - the bound variable is fine to leave in place.
+                }
                 else
                     whichDict.Variables.Remove(identifier);
             }
@@ -648,6 +688,23 @@ namespace kOS.Execution
         {
             Variable variable = new Variable {Name = identifier};
             AddVariable(variable, identifier, true);
+            variable.Value = value;
+        }
+
+        /// <summary>
+        /// Make a new global variable at the localmost scoping level and
+        /// give it a starting value, or overwrite an existing variable
+        /// at the localmost level with a starting value.<br/>
+        /// <br/>
+        /// This does NOT scan up the scoping stack like SetValue() does.
+        /// It operates at the global level only.<br/>
+        /// </summary>
+        /// <param name="identifier">variable name to attempt to store into</param>
+        /// <param name="value">value to put into it</param>
+        public void SetGlobal(string identifier, object value)
+        {
+            Variable variable = new Variable {Name = identifier};
+            AddVariable(variable, identifier, false, true);
             variable.Value = value;
         }
 
@@ -758,10 +815,7 @@ namespace kOS.Execution
 
         public void StartWait(double waitTime)
         {
-            if (waitTime > 0)
-            {
-                timeWaitUntil = currentTime + waitTime;
-            }
+            timeWaitUntil = currentTime + waitTime;
             currentStatus = Status.Waiting;
         }
 
@@ -771,7 +825,7 @@ namespace kOS.Execution
             currentStatus = Status.Running;
         }
 
-        public void Update(double deltaTime)
+        public void KOSFixedUpdate(double deltaTime)
         {
             bool showStatistics = Config.Instance.ShowStatistics;
             Stopwatch updateWatch = null;
@@ -872,7 +926,7 @@ namespace kOS.Execution
 
         private void ProcessWait()
         {
-            if (currentStatus == Status.Waiting && timeWaitUntil > 0)
+            if (currentStatus == Status.Waiting)
             {
                 if (currentTime >= timeWaitUntil)
                 {
@@ -895,11 +949,14 @@ namespace kOS.Execution
                     currentContext.InstructionPointer = triggerPointer;
 
                     bool executeNext = true;
+                    executeLog.Remove(0,executeLog.Length); // why doesn't StringBuilder just have a Clear() operator?
                     while (executeNext && instructionsSoFarInUpdate < instructionsPerUpdate)
                     {
                         executeNext = ExecuteInstruction(currentContext);
                         instructionsSoFarInUpdate++;
                     }
+                    if (executeLog.Length > 0)
+                        SafeHouse.Logger.Log(executeLog.ToString());
                 }
                 catch (Exception e)
                 {
@@ -918,7 +975,7 @@ namespace kOS.Execution
         private void ContinueExecution()
         {
             bool executeNext = true;
-            
+            executeLog.Remove(0,executeLog.Length); // why doesn't StringBuilder just have a Clear() operator?
             while (currentStatus == Status.Running && 
                    instructionsSoFarInUpdate < instructionsPerUpdate &&
                    executeNext &&
@@ -927,6 +984,8 @@ namespace kOS.Execution
                 executeNext = ExecuteInstruction(currentContext);
                 instructionsSoFarInUpdate++;
             }
+            if (executeLog.Length > 0)
+                SafeHouse.Logger.Log(executeLog.ToString());
         }
 
         private bool ExecuteInstruction(ProgramContext context)
@@ -936,20 +995,30 @@ namespace kOS.Execution
             Opcode opcode = context.Program[context.InstructionPointer];
             if (DEBUG_EACH_OPCODE)
             {
-                SafeHouse.Logger.Log("ExecuteInstruction.  Opcode number " + context.InstructionPointer + " out of " + context.Program.Count +
-                                      "\n                   Opcode is: " + opcode.Label + " " + opcode.ToString() );
+                executeLog.Append(String.Format("Executing Opcode {0:0000}/{1:0000} {2} {3}\n",
+                                                context.InstructionPointer, context.Program.Count, opcode.Label, opcode.ToString()));
             }
-            
-            if (!(opcode is OpcodeEOF || opcode is OpcodeEOP))
+            try
             {
-                opcode.Execute(this);
-                context.InstructionPointer += opcode.DeltaInstructionPointer;
-                return true;
+                if (!(opcode is OpcodeEOF || opcode is OpcodeEOP))
+                {
+                    opcode.Execute(this);
+                    context.InstructionPointer += opcode.DeltaInstructionPointer;
+                    return true;
+                }
+                if (opcode is OpcodeEOP)
+                {
+                    BreakExecution(false);
+                    SafeHouse.Logger.Log("Execution Broken");
+                }
             }
-            if (opcode is OpcodeEOP)
+            catch (Exception)
             {
-                BreakExecution(false);
-                SafeHouse.Logger.Log("Execution Broken");
+                // exception will skip the normal printing of the log buffer,
+                // so print what we have so far before throwing up the exception:
+                if (executeLog.Length > 0)
+                    SafeHouse.Logger.Log(executeLog.ToString());
+                throw;
             }
             return false;
         }
@@ -1104,7 +1173,7 @@ namespace kOS.Execution
 
         public void Dispose()
         {
-            shared.UpdateHandler.RemoveObserver(this);
+            shared.UpdateHandler.RemoveFixedObserver(this);
         }
     }
 }
