@@ -6,7 +6,6 @@ using kOS.Safe.Encapsulation;
 using kOS.Safe.Execution;
 using kOS.Safe.Exceptions;
 using kOS.Safe.Utilities;
-
 namespace kOS.Safe.Compilation
 {
     /// A very short numerical ID for the opcode. <br/>
@@ -75,15 +74,18 @@ namespace kOS.Safe.Compilation
         ENDWAIT        = 0x56,
         GETMETHOD      = 0x57,
         STORELOCAL     = 0x58,
-        PUSHSCOPE      = 0x59,
-        POPSCOPE       = 0x5a,
-        STOREEXIST     = 0x5b,
+        STOREGLOBAL    = 0x59,
+        PUSHSCOPE      = 0x5a,
+        POPSCOPE       = 0x5b,
+        STOREEXIST     = 0x5c,
+        PUSHDELEGATE   = 0x5d,
 
         // Augmented bogus placeholder versions of the normal
         // opcodes: These only exist in the program temporarily
         // or in the ML file but never actually can be executed.
         
         PUSHRELOCATELATER = 0xce,
+        PUSHDELEGATERELOCATELATER = 0xcd,
         LABELRESET = 0xf0     // for storing the fact that the Opcode.Label's positional index jumps weirdly.
     }
 
@@ -103,7 +105,7 @@ namespace kOS.Safe.Compilation
     /// WARNING! BE SURE TO EDIT CompiledObject.InitTypeData() if you add any new [MLField]'s that
     /// refer to argument types that haven't already been mentioned in CompiledObject.InitTypeData().
     /// </summary>
-    [AttributeUsage(AttributeTargets.Property, Inherited=true)]
+    [AttributeUsage(AttributeTargets.Property)]
     public class MLField : Attribute
     {
         public int Ordering { get; private set; }
@@ -147,7 +149,7 @@ namespace kOS.Safe.Compilation
         private static int lastId;
         private readonly int id = ++lastId;
 
-        // SHOUD-BE-STATIC MEMBERS:
+        // SHOULD-BE-STATIC MEMBERS:
         // ========================
         //
         // There are places in this class where a static abstract member was the intent,
@@ -158,7 +160,7 @@ namespace kOS.Safe.Compilation
         // Name="jump", and so on.)
         // 
         // But C# cannot support this, apparently, due to a limitation in how it implements class
-        // inheritences.  It doesn't know how to store overrides at the static level where there's just
+        // inheritances.  It doesn't know how to store overrides at the static level where there's just
         // one instance per subclass definition.   It only knows how to override dynamic members.  Because of
         // this the compiler will call it an error to try to make a member be both abstract and static.
         //
@@ -293,7 +295,7 @@ namespace kOS.Safe.Compilation
                     catch (MissingMethodException)
                     {
                         SafeHouse.Logger.Log( String.Format(forceDefaultConstructorMsg, opType.Name) );
-                        Utilities.Debug.AddNagMessage( Utilities.Debug.NagType.NAGFOREVER, "ERROR IN OPCODE DEFINITION " + opType.Name );
+                        Debug.AddNagMessage( Debug.NagType.NAGFOREVER, "ERROR IN OPCODE DEFINITION " + opType.Name );
                         return;
                     }
                     
@@ -514,7 +516,34 @@ namespace kOS.Safe.Compilation
             cpu.SetNewLocal(identifier, value);
         }
     }
-    
+
+    /// <summary>
+    /// Consumes the topmost 2 values of the stack, storing the topmost stack
+    /// value into a variable described by the next value down the stack. <br/>
+    /// <br/>
+    /// The variable will always be stored at a global scope, overwriting
+    /// whatever else was there if the variable already existed.<br/>
+    /// <br/>
+    /// It will ignore local scoping and never store the value in a local
+    /// variable<br/>
+    /// <br/>
+    /// It's impossible to make a variable that hasn't been given an initial value.
+    /// Its the act of storing a value into the variable that causues it to exist.
+    /// This is deliberate design.
+    /// </summary>
+    public class OpcodeStoreGlobal : Opcode
+    {
+        protected override string Name { get { return "storeglobal"; } }
+        public override ByteCode Code { get { return ByteCode.STOREGLOBAL; } }
+
+        public override void Execute(ICpu cpu)
+        {
+            object value = cpu.PopValue();
+            var identifier = (string)cpu.PopStack();
+            cpu.SetGlobal(identifier, value);
+        }
+    }
+
     public class OpcodeUnset : Opcode
     {
         protected override string Name { get { return "unset"; } }
@@ -533,7 +562,6 @@ namespace kOS.Safe.Compilation
             }
         }
     }
-
     
     public class OpcodeGetMember : Opcode
     {
@@ -893,7 +921,17 @@ namespace kOS.Safe.Compilation
             else if (value is double)
                 result = -((double)value);
             else
-                throw new KOSUnaryOperandTypeException("negate", value);
+            {
+                // Generic last-ditch to catch any sort of object that has
+                // overloaded the unary negate operator '-'.
+                // (For example, kOS.Suffixed.Vector and kOS.Suffixed.Direction)
+                Type t = value.GetType();
+                MethodInfo negateMe = t.GetMethod("op_UnaryNegation", BindingFlags.Static | BindingFlags.Public); // C#'s alternate name for '-' operator
+                if (negateMe != null)
+                    result = negateMe.Invoke(null, new[]{value}); // value is an arg, not the 'this'.  (Method is static.)
+                else
+                    throw new KOSUnaryOperandTypeException("negate", value);
+            }
 
             cpu.PushStack(result);
         }
@@ -1127,6 +1165,8 @@ namespace kOS.Safe.Compilation
             if (Direct)
             {
                 functionPointer = cpu.GetValue(Destination);
+                if (functionPointer == null)
+                    throw new KOSException("Attempt to call function failed - Value of function pointer for " + Destination + " is null.");
             }
             else // for indirect calls, dig down to find what's underneath the argument list in the stack and use that:
             {
@@ -1178,14 +1218,23 @@ namespace kOS.Safe.Compilation
                     functionPointer = cpu.GetValue(functionName);
                 }
             }
- 
-            if (functionPointer is int) 
+            IUserDelegate userDelegate = functionPointer as IUserDelegate;
+            if (userDelegate != null)
+                functionPointer = userDelegate.EntryPoint;
+
+            if (functionPointer is int)
             {
                 ReverseStackArgs(cpu);
                 int currentPointer = cpu.InstructionPointer;
                 DeltaInstructionPointer = (int)functionPointer - currentPointer;
                 var contextRecord = new SubroutineContext(currentPointer+1);
                 cpu.PushAboveStack(contextRecord);
+                if (userDelegate != null)
+                {
+                    // Reverse-push the closure's scope record, just after the function return context got put on the stack.
+                    for (int i = userDelegate.Closure.Count - 1 ; i >= 0 ; --i)
+                        cpu.PushAboveStack(userDelegate.Closure[i]);
+                }
             }
             else if (functionPointer is string)
             {
@@ -1218,7 +1267,6 @@ namespace kOS.Safe.Compilation
             {
                 cpu.PushStack(delegateReturn); // And now leave the return value on the stack to be read.
             }
-
         }
         
         /// <summary>
@@ -1359,12 +1407,26 @@ namespace kOS.Safe.Compilation
 
         public override void Execute(ICpu cpu)
         {
+            // The only thing on the "above stack" now that is allowed to get in the way of
+            // finding the context record that tells us where to jump back to, are the potential
+            // closure scope frames that might have been pushed if this subroutine was
+            // called via a delegate reference.  Consume any of those that are in
+            // the way, then expect the context record.  Any other pattern encountered
+            // is proof the stack alignment got screwed up:
+            bool okay;
+            VariableScope peeked = cpu.PeekRaw(-1, out okay) as VariableScope;
+            while (okay && peeked != null && peeked.IsClosure)
+            {
+                cpu.PopAboveStack(1);
+                peeked = cpu.PeekRaw(-1, out okay) as VariableScope;
+            }
             object shouldBeContextRecord = cpu.PopAboveStack(1);
             if ( !(shouldBeContextRecord is SubroutineContext) )
             {
                 // This should never happen with any user code:
                 throw new Exception( "kOS internal error: Stack misalignment detected when returning from routine.");
             }
+
             // Return value should be atop the stack - we have to pop it so that
             // we can reach the arg start marker under it:
             object returnVal = cpu.PopValue();
@@ -1377,7 +1439,10 @@ namespace kOS.Safe.Compilation
 
             if ( (shouldBeArgMarker == null) || (!(shouldBeArgMarker.Equals(OpcodeCall.ARG_MARKER_STRING))) )
             {
-                throw new KOSArgumentMismatchException("(detected when returning from function)");
+                throw new KOSArgumentMismatchException(
+                    string.Format("(detected when returning from function and the stack still had {0} on it)", 
+                    (shouldBeArgMarker ?? "a non-string value"))
+                );
             }
             // If the proper argument marker was found, then it's all okay, so put the return value
             // back, where it belongs, now that the arg start marker was popped off:
@@ -1662,14 +1727,71 @@ namespace kOS.Safe.Compilation
         {
             cpu.PopAboveStack(NumLevels);
         }
-        
+
         public override string ToString()
         {
             return Name + " " + NumLevels;
         }
   
     }
+    
+    public class OpcodePushDelegate : Opcode
+    {
+        [MLField(1,false)]
+        private int EntryPoint { get; set; }
 
+        protected override string Name { get { return "pushdelegate"; } }
+        public override ByteCode Code { get { return ByteCode.PUSHDELEGATE; } }
+
+        public OpcodePushDelegate(int entryPoint)
+        {
+            EntryPoint = entryPoint;
+        }
+
+        /// <summary>
+        /// This variant of the constructor is just for ML file save/load to use.
+        /// </summary>
+        protected OpcodePushDelegate() { }
+
+        public override void PopulateFromMLFields(List<object> fields)
+        {
+            // Expect fields in the same order as the [MLField] properties of this class:
+            if (fields == null || fields.Count<1)
+                throw new Exception("Saved field in ML file for OpcodePush seems to be missing.  Version mismatch?");
+            EntryPoint = (int)fields[0];
+        }
+
+        public override void Execute(ICpu cpu)
+        {
+            IUserDelegate pushMe = cpu.MakeUserDelegate(EntryPoint);
+            cpu.PushStack(pushMe);
+        }
+
+        public override string ToString()
+        {
+            return Name + " " + EntryPoint.ToString();
+        }
+    }
+    
+    /// <summary>
+    /// This serves the same purpose as OpcodePushRelocateLater, except it's for
+    /// use with UserDelegates instead of raw integer IP calls.
+    /// </summary>
+    public class OpcodePushDelegateRelocateLater : OpcodePushRelocateLater
+    {
+        protected override string Name { get { return "PushDelegateRelocateLater"; } }
+        public override ByteCode Code { get { return ByteCode.PUSHDELEGATERELOCATELATER; } }
+
+        public OpcodePushDelegateRelocateLater(string destLabel) : base(destLabel)
+        {
+        }
+
+        /// <summary>
+        /// This variant of the constructor is just for ML file save/load to use.
+        /// </summary>
+        protected OpcodePushDelegateRelocateLater() : base() { }
+    }
+    
     #endregion
 
     #region Wait / Trigger
@@ -1677,41 +1799,18 @@ namespace kOS.Safe.Compilation
     
     public class OpcodeAddTrigger : Opcode
     {
-        [MLField(1,false)]
-        private bool ShouldWait { get; set; }
-
         protected override string Name { get { return "addtrigger"; } }
         public override ByteCode Code { get { return ByteCode.ADDTRIGGER; } }
-
-        public OpcodeAddTrigger(bool shouldWait)
-        {
-            ShouldWait = shouldWait;
-        }
-
-        /// <summary>
-        /// This variant of the constructor is just for ML save/load to use.
-        /// </summary>
-        protected OpcodeAddTrigger() { }
-
-        public override void PopulateFromMLFields(List<object> fields)
-        {
-            // Expect fields in the same order as the [MLField] properties of this class:
-            if (fields == null || fields.Count<1)
-                throw new Exception("Saved field in ML file for OpcodeAddTrigger seems to be missing.  Version mismatch?");
-            ShouldWait = (bool)(fields[0]); // should throw error if it's not a bool.
-        }
 
         public override void Execute(ICpu cpu)
         {
             var functionPointer = (int)cpu.PopValue();
             cpu.AddTrigger(functionPointer);
-            if (ShouldWait)
-                cpu.StartWait(0);
         }
 
         public override string ToString()
         {
-            return Name + " " + ShouldWait.ToString().ToLower();
+            return Name;
         }
     }
 
@@ -1736,11 +1835,8 @@ namespace kOS.Safe.Compilation
 
         public override void Execute(ICpu cpu)
         {
-            object waitTime = cpu.PopValue();
-            if (waitTime is double)
-                cpu.StartWait((double)waitTime);
-            else if (waitTime is int)
-                cpu.StartWait((int)waitTime);
+            object arg = cpu.PopValue();
+            cpu.StartWait(Convert.ToDouble(arg));
         }
     }
 

@@ -231,6 +231,7 @@ namespace kOS.Module
             var temp = new Archive();
             var files = temp.GetFileList();
             var maxchoice = 0;
+            bootFiles.Add("None");
             foreach (FileInfo file in files)
             {
                 if (!file.Name.StartsWith("boot", StringComparison.InvariantCultureIgnoreCase)) continue;
@@ -291,7 +292,7 @@ namespace kOS.Module
             {
                 HardDisk = new Harddisk(Mathf.Min(diskSpace, PROCESSOR_HARD_CAP));
                 // populate it with the boot file, but only if using a new disk and in PRELAUNCH situation:
-                if (vessel.situation == Vessel.Situations.PRELAUNCH)
+                if (vessel.situation == Vessel.Situations.PRELAUNCH && bootFile != "None")
                 {
                     var bootProgramFile = archive.GetByName(bootFile);
                     if (bootProgramFile != null)
@@ -311,6 +312,7 @@ namespace kOS.Module
             }
             
             InitProcessorTracking();
+
             // move Cpu.Boot() to within the first Update() to prevent boot script errors from killing OnStart
             // shared.Cpu.Boot();
         }
@@ -345,7 +347,7 @@ namespace kOS.Module
             // This is technically called any time ANY part is destroyed, so ignore it if it's not MY part:
             if (p != part)
                 return;
-            
+
             GetWindow().DetachAllTelnets();
             
             allMyInstances.RemoveAll(m => m==this);

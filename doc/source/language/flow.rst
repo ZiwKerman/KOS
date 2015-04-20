@@ -87,7 +87,7 @@ Every time you read the value of the "variable", it executes the expression
 again.
 
 .. note::
-    If a ``LOCK`` expression is used with a flight control such as ``THROTTLE`` or ``STEERING``, then it will get continually evaluated in the background :ref:`each update tick <cpu hardware>`.
+    If a ``LOCK`` expression is used with a flight control such as ``THROTTLE`` or ``STEERING``, then it will get continually evaluated in the background :ref:`each physics tick <cpu hardware>`.
 
 .. index:: UNLOCK
 .. _unlock:
@@ -171,6 +171,14 @@ Halts execution for a specified amount of time, or until a specific set of crite
     WAIT UNTIL APOAPSIS > 150000. // You can see where this is going
 
 Note that any ``WAIT`` statement, no matter what the actual expression is, will always result in a wait time that lasts at least :ref:`one physics tick <cpu hardware>`.
+
+.. note::
+
+    The :ref:`WAIT <wait>` command only causes mainline code
+    to be suspended.  Trigger code such as WHEN, ON, LOCK STEERING,
+    and LOCK THROTTLE, will continue executing while your program
+    is sitting still on the WAIT command.
+    
 
 .. index:: WHEN
 .. _when:

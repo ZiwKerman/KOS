@@ -202,9 +202,6 @@ namespace kOS.Safe.Compilation.KS
                 case TokenType.until_stmt:
                     Value = Evaluntil_stmt(tree, paramlist);
                     break;
-                case TokenType.lock_stmt:
-                    Value = Evallock_stmt(tree, paramlist);
-                    break;
                 case TokenType.unlock_stmt:
                     Value = Evalunlock_stmt(tree, paramlist);
                     break;
@@ -249,6 +246,18 @@ namespace kOS.Safe.Compilation.KS
                     break;
                 case TokenType.preserve_stmt:
                     Value = Evalpreserve_stmt(tree, paramlist);
+                    break;
+                case TokenType.declare_identifier_clause:
+                    Value = Evaldeclare_identifier_clause(tree, paramlist);
+                    break;
+                case TokenType.declare_parameter_clause:
+                    Value = Evaldeclare_parameter_clause(tree, paramlist);
+                    break;
+                case TokenType.declare_function_clause:
+                    Value = Evaldeclare_function_clause(tree, paramlist);
+                    break;
+                case TokenType.declare_lock_clause:
+                    Value = Evaldeclare_lock_clause(tree, paramlist);
                     break;
                 case TokenType.declare_stmt:
                     Value = Evaldeclare_stmt(tree, paramlist);
@@ -315,6 +324,9 @@ namespace kOS.Safe.Compilation.KS
                     break;
                 case TokenType.multdiv_expr:
                     Value = Evalmultdiv_expr(tree, paramlist);
+                    break;
+                case TokenType.unary_expr:
+                    Value = Evalunary_expr(tree, paramlist);
                     break;
                 case TokenType.factor:
                     Value = Evalfactor(tree, paramlist);
@@ -411,13 +423,6 @@ namespace kOS.Safe.Compilation.KS
         }
 
         protected virtual object Evaluntil_stmt(ParseTree tree, params object[] paramlist)
-        {
-            foreach (var node in Nodes)
-                node.Eval(tree, paramlist);
-            return null;
-        }
-
-        protected virtual object Evallock_stmt(ParseTree tree, params object[] paramlist)
         {
             foreach (var node in Nodes)
                 node.Eval(tree, paramlist);
@@ -523,6 +528,34 @@ namespace kOS.Safe.Compilation.KS
         }
 
         protected virtual object Evalpreserve_stmt(ParseTree tree, params object[] paramlist)
+        {
+            foreach (var node in Nodes)
+                node.Eval(tree, paramlist);
+            return null;
+        }
+
+        protected virtual object Evaldeclare_identifier_clause(ParseTree tree, params object[] paramlist)
+        {
+            foreach (var node in Nodes)
+                node.Eval(tree, paramlist);
+            return null;
+        }
+
+        protected virtual object Evaldeclare_parameter_clause(ParseTree tree, params object[] paramlist)
+        {
+            foreach (var node in Nodes)
+                node.Eval(tree, paramlist);
+            return null;
+        }
+
+        protected virtual object Evaldeclare_function_clause(ParseTree tree, params object[] paramlist)
+        {
+            foreach (var node in Nodes)
+                node.Eval(tree, paramlist);
+            return null;
+        }
+
+        protected virtual object Evaldeclare_lock_clause(ParseTree tree, params object[] paramlist)
         {
             foreach (var node in Nodes)
                 node.Eval(tree, paramlist);
@@ -677,6 +710,13 @@ namespace kOS.Safe.Compilation.KS
         }
 
         protected virtual object Evalmultdiv_expr(ParseTree tree, params object[] paramlist)
+        {
+            foreach (var node in Nodes)
+                node.Eval(tree, paramlist);
+            return null;
+        }
+
+        protected virtual object Evalunary_expr(ParseTree tree, params object[] paramlist)
         {
             foreach (var node in Nodes)
                 node.Eval(tree, paramlist);
